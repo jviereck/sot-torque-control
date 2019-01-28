@@ -42,6 +42,7 @@ SET(plugins
   se3-trajectory-generator
   madgwickahrs
   inverse-dynamics-balance-controller
+  tsid-controller
   position-controller
   control-manager
   current-controller
@@ -64,7 +65,7 @@ ENDIF(DDP_ACTUATOR_SOLVER_FOUND)
 FOREACH(plugin ${plugins})
 
   message( " Build plugin ${plugin}")
-  
+
   #retrieve plugin name
   GET_FILENAME_COMPONENT(LIBRARY_NAME ${plugin} NAME)
 

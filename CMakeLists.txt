@@ -79,7 +79,7 @@ ADD_REQUIRED_DEPENDENCY("sot-core >= 3.0.0")
 ADD_REQUIRED_DEPENDENCY("pinocchio >= 1.2")
 ADD_REQUIRED_DEPENDENCY("tsid")
 ADD_REQUIRED_DEPENDENCY("parametric-curves")
-ADD_REQUIRED_DEPENDENCY("simple_humanoid_description")
+ADD_OPTIONAL_DEPENDENCY("simple_humanoid_description")
 
 ADD_OPTIONAL_DEPENDENCY("ddp-actuator-solver")
 SET(SOTTORQUECONTROL_LIB_NAME ${PROJECT_NAME})
@@ -96,6 +96,7 @@ SET(${LIBRARY_NAME}_HEADERS
   include/sot/torque_control/se3-trajectory-generator.hh
   include/sot/torque_control/free-flyer-locator.hh
   include/sot/torque_control/inverse-dynamics-balance-controller.hh
+  include/sot/torque_control/tsid-controller.hh
   include/sot/torque_control/position-controller.hh
   include/sot/torque_control/control-manager.hh
   include/sot/torque_control/current-controller.hh

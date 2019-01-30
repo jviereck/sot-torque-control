@@ -62,7 +62,7 @@ set_gain('constraints', 100., 6)
 
 # Signals for the contacts.
 for cf in contact_frames:
-    controller.__getattr__(cf + '__f_min').value = 10.
+    controller.__getattr__(cf + '__f_min').value = 0.
     controller.__getattr__(cf + '__f_max').value = 10.
     controller.__getattr__(cf + '__contact_normal').value = [0., 0., 1]
     controller.__getattr__(cf + '__mu').value = 0.6
@@ -99,9 +99,11 @@ print('  ddq=', ddq)
 
 com_final = robot.com(q)
 
-print("--> COM drift: ", com_final - com_initial)
+print("--> COM drift: ", (com_final - com_initial).T)
 
 for cf in contact_frames:
     sig = controller.__getattr__(cf + '__des_f')
     sig.recompute(iter)
     print(cf + '__des_f', sig.value)
+
+assert(np.linalg.norm(com_final - com_initial) < 1e-2)

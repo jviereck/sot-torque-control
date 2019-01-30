@@ -598,7 +598,7 @@ namespace dynamicgraph
         if(m_w_com != w_com)
         {
           m_w_com = w_com;
-          m_invDyn->updateTaskWeight(m_taskCom->name(), w_cog
+          m_invDyn->updateTaskWeight(m_taskCom->name(), m_w_com);
         }
 
         if (m_posture_ref_posSIN.isPlugged()) {
@@ -614,8 +614,8 @@ namespace dynamicgraph
         // Posture
         if (m_w_postureSIN.isPlugged()) {
           const double & w_posture = m_w_postureSIN(iter);
-          const VectorN& kp_posture = m_kp_postureSIN(iter);g
-          const VectorN& kd_posture = m_kd_postureSIN(iter);g
+          const VectorN& kp_posture = m_kp_postureSIN(iter);
+          const VectorN& kd_posture = m_kd_postureSIN(iter);
 
           assert(kp_posture.size() == nj);
           assert(kd_posture.size() == nj);

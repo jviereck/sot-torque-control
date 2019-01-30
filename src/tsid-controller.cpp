@@ -35,6 +35,14 @@
 
 #define ZERO_FORCE_THRESHOLD 1e-3
 
+// Special macros for the contact-helper to include the frame name.
+#define CONSTRUCT_CH_SIGNAL_IN(name,type)\
+  m_##name##SIN( NULL,controller.getClassName()+"("+controller.getName()+")::input("+#type+")::"+frame_name+"__"+#name )
+
+#define CONSTRUCT_CH_SIGNAL_OUT( name,type,dep )		        \
+  m_##name##SOUT(boost::bind(&EntityClassName::SIGNAL_OUT_FUNCTION_NAME(name),this,_1,_2), \
+                dep,controller.getClassName()+"("+controller.getName()+")::output("+#type+")::"+frame_name+"__"+#name )
+
 namespace dynamicgraph
 {
   namespace sot
@@ -65,49 +73,72 @@ namespace dynamicgraph
           , m_frameName(frame_name)
           , m_frameId(robot.model().getFrameId(frame_name))
           , m_init(false)
-          , CONSTRUCT_SIGNAL_IN(ref_pos, dynamicgraph::Vector)
-          , CONSTRUCT_SIGNAL_IN(ref_vel, dynamicgraph::Vector)
-          , CONSTRUCT_SIGNAL_IN(ref_acc, dynamicgraph::Vector)
-          , CONSTRUCT_SIGNAL_IN(ref_f, dynamicgraph::Vector)
-          , CONSTRUCT_SIGNAL_IN(f_min, double)
-          , CONSTRUCT_SIGNAL_IN(f_max, double)
+          , CONSTRUCT_CH_SIGNAL_IN(ref_pos, dynamicgraph::Vector)
+          , CONSTRUCT_CH_SIGNAL_IN(ref_vel, dynamicgraph::Vector)
+          , CONSTRUCT_CH_SIGNAL_IN(ref_acc, dynamicgraph::Vector)
+          , CONSTRUCT_CH_SIGNAL_IN(ref_f, dynamicgraph::Vector)
+          , CONSTRUCT_CH_SIGNAL_IN(f_min, double)
+          , CONSTRUCT_CH_SIGNAL_IN(f_max, double)
+          , CONSTRUCT_CH_SIGNAL_IN(mu, double)
+          , CONSTRUCT_CH_SIGNAL_IN(contact_normal, dynamicgraph::Vector)
 
-          , CONSTRUCT_SIGNAL_OUT(des_f, dynamicgraph::Vector, controller.m_tau_desSOUT)
-          , CONSTRUCT_SIGNAL_OUT(des_acc, dynamicgraph::Vector, controller.m_tau_desSOUT)
+          , CONSTRUCT_CH_SIGNAL_OUT(des_f, dynamicgraph::Vector, controller.m_tau_desSOUT)
+          , CONSTRUCT_CH_SIGNAL_OUT(des_acc, dynamicgraph::Vector, controller.m_tau_desSOUT)
 
-          , CONSTRUCT_SIGNAL_OUT(pos,   dynamicgraph::Vector, controller.m_tau_desSOUT)
-          , CONSTRUCT_SIGNAL_OUT(vel,   dynamicgraph::Vector, controller.m_tau_desSOUT)
-          , CONSTRUCT_SIGNAL_OUT(acc,   dynamicgraph::Vector, controller.m_tau_desSOUT)
+          , CONSTRUCT_CH_SIGNAL_OUT(pos,   dynamicgraph::Vector, controller.m_tau_desSOUT)
+          , CONSTRUCT_CH_SIGNAL_OUT(vel,   dynamicgraph::Vector, controller.m_tau_desSOUT)
+          , CONSTRUCT_CH_SIGNAL_OUT(acc,   dynamicgraph::Vector, controller.m_tau_desSOUT)
 
-          , m_contactState(SUPPORT)
+          , m_contactState(FLYING)
       {
-        assert(m_robot.model()->existFrame(frame_name));
+        assert(m_robot.model().existFrame(frame_name));
+        m_signals = m_ref_posSIN << m_ref_velSIN << m_ref_accSIN <<
+            m_ref_fSIN << m_f_minSIN << m_f_maxSIN << m_muSIN << m_contact_normalSIN <<
+            m_des_fSOUT << m_posSOUT << m_velSOUT << m_accSOUT << m_des_accSOUT;
       }
 
       void TsidContactHelper::init()
       {
         m_contact = new ContactPoint("contact_" + m_frameName, m_robot, m_frameName,
-                          m_controller.m_contact_normalSIN(0),
-                          m_controller.m_muSIN(0),
+                          m_contact_normalSIN(0),
+                          m_muSIN(0),
                           m_f_minSIN(0),
                           m_f_maxSIN(0),
                           m_controller.m_w_forcesSIN(0));
+
+        // @REVIER: How to provide boolean signal for frame orientation?
+        m_contact->useLocalFrame(false);
+
         m_contact->Kp(m_controller.m_kp_constraintsSIN(0));
         m_contact->Kd(m_controller.m_kd_constraintsSIN(0));
-        m_invDyn.addRigidContact(*m_contact);
 
         m_taskMotion = new TaskSE3Equality("task_" + m_frameName, m_robot, m_frameName);
         m_taskMotion->Kp(m_controller.m_kp_feetSIN(0));
         m_taskMotion->Kp(m_controller.m_kd_feetSIN(0));
+
+        // Change the contact state depending on the m_ref_fSIN signal.
+        if(m_ref_fSIN.isPlugged())
+        {
+          const Vector3 & f_ref  = m_ref_fSIN(0);
+          m_contact->setForceReference(f_ref);
+
+          if (f_ref.norm() < ZERO_FORCE_THRESHOLD) {
+            m_contactState = SUPPORT;
+            removeContact(0., 0.0);
+          } else {
+            addContact(0.);
+          }
+        } else {
+          // If no force reference is provided, assume the contact is active.
+          addContact(0.);
+        }
 
         m_init = true;
       }
 
       const SignalArray<int>& TsidContactHelper::signals()
       {
-        return m_ref_posSIN << m_ref_velSIN << m_ref_accSIN <<
-            m_ref_fSIN << m_f_minSIN << m_f_maxSIN <<
-            m_des_fSOUT << m_posSOUT << m_velSOUT << m_accSOUT << m_des_accSOUT;
+        return m_signals;
       }
 
       void TsidContactHelper::addContact(const double& transitionTime)
@@ -115,13 +146,15 @@ namespace dynamicgraph
         if(m_contactState == FLYING)
         {
           SEND_MSG("Add contact " + m_contact->name() + " after transition time " + toString(transitionTime) + " s.", MSG_TYPE_INFO);
-          m_invDyn.addRigidContact(*m_contact);
+
+          pinocchio::SE3 ref = m_robot.framePosition(m_invDyn.data(), m_robot.model().getFrameId(m_frameName));
+          m_contact->setReference(ref);
+          SEND_MSG("Setting foot reference to " + toString(ref), MSG_TYPE_DEBUG);
+
+          // @REVIEWER: Is it okay to assume priority_level 1 by default for now?
+          m_invDyn.addRigidContact(*m_contact, 1);
           m_invDyn.removeTask(m_taskMotion->name(), transitionTime);
           m_contactState = SUPPORT;
-
-          pinocchio::SE3 ref = m_robot.position(m_invDyn.data(), m_robot.model().getJointId(m_frameName));
-          m_contact->setReference(ref);
-          SEND_MSG("Setting left foot reference to " + toString(ref), MSG_TYPE_DEBUG);
         }
       }
 
@@ -191,6 +224,11 @@ namespace dynamicgraph
         if (!m_invDyn.getContactForces(m_contact->name(), sol, m_f_sol)) {
           m_f_sol.setZero();
         }
+      }
+
+      void TsidContactHelper::sendMsg(const std::string& msg, MsgType t, const char* file, int line)
+      {
+        getLogger().sendMsg("["+m_controller.getName() + "@" + m_frameName +"] "+msg, t, file, line);
       }
 
       DEFINE_SIGNAL_OUT_FUNCTION(des_f, dynamicgraph::Vector)
@@ -269,6 +307,10 @@ namespace dynamicgraph
         return s;
       }
 
+#define PROFILE_TAU_DES_COMPUTATION "TsidCtrl: desired tau"
+#define PROFILE_HQP_SOLUTION        "TsidCtrl: HQP"
+#define PROFILE_READ_INPUT_SIGNALS_AND_PREPARE_INVDYN "TsidCtrl: read signals and prepare invdyn"
+
 #define INPUT_SIGNALS m_com_ref_posSIN \
   << m_com_ref_velSIN \
   << m_com_ref_accSIN \
@@ -298,7 +340,7 @@ namespace dynamicgraph
   << m_rotor_inertiasSIN \
   << m_gear_ratiosSIN \
   << m_qSIN \
-  << m_vSIN \
+  << m_vSIN
 
 #define OUTPUT_SIGNALS        m_tau_desSOUT \
   << m_comSOUT \
@@ -311,7 +353,9 @@ namespace dynamicgraph
 
       /// Define EntityClassName here rather than in the header file
       /// so that it can be used by the macros DEFINE_SIGNAL_**_FUNCTION.
+      #undef EntityClassName
       #define EntityClassName TsidController
+      typedef Eigen::Matrix<double,Eigen::Dynamic,1> VectorN;
 
       /* --- DG FACTORY ---------------------------------------------------- */
       DYNAMICGRAPH_FACTORY_ENTITY_PLUGIN(TsidController,
@@ -332,39 +376,35 @@ namespace dynamicgraph
             ,CONSTRUCT_SIGNAL_IN(base_orientation_ref_pos,    dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(base_orientation_ref_vel,    dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(base_orientation_ref_acc,    dynamicgraph::Vector)
+
             ,CONSTRUCT_SIGNAL_IN(kp_base_orientation,         dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(kd_base_orientation,         dynamicgraph::Vector)
-            ,CONSTRUCT_SIGNAL_IN(kp_constraints,              dynamicgraph::Vector)
-            ,CONSTRUCT_SIGNAL_IN(kd_constraints,              dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(kp_com,                      dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(kd_com,                      dynamicgraph::Vector)
-            ,CONSTRUCT_SIGNAL_IN(kp_contact,                  dynamicgraph::Vector)
-    	      ,CONSTRUCT_SIGNAL_IN(kd_contact,                  dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(kp_feet,                     dynamicgraph::Vector)
     	      ,CONSTRUCT_SIGNAL_IN(kd_feet,                     dynamicgraph::Vector)
+            ,CONSTRUCT_SIGNAL_IN(kp_constraints,              dynamicgraph::Vector)
+            ,CONSTRUCT_SIGNAL_IN(kd_constraints,              dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(kp_posture,                  dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(kd_posture,                  dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(kp_pos,                      dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(kd_pos,                      dynamicgraph::Vector)
+
             ,CONSTRUCT_SIGNAL_IN(w_com,                       double)
             ,CONSTRUCT_SIGNAL_IN(w_feet,                      double)
             ,CONSTRUCT_SIGNAL_IN(w_posture,                   double)
             ,CONSTRUCT_SIGNAL_IN(w_forces,                    double)
-            ,CONSTRUCT_SIGNAL_IN(mu,                          double)
-            ,CONSTRUCT_SIGNAL_IN(f_min,                       double)
-            ,CONSTRUCT_SIGNAL_IN(contact_normal,              dynamicgraph::Vector)
+            ,CONSTRUCT_SIGNAL_IN(weight_contact_forces,       dynamicgraph::Vector)
+
             ,CONSTRUCT_SIGNAL_IN(rotor_inertias,              dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(gear_ratios,                 dynamicgraph::Vector)
-
-            ,CONSTRUCT_SIGNAL_OUT(dv_des,                     dg::Vector, m_tau_desSOUT)
 
             ,CONSTRUCT_SIGNAL_IN(q,                           dynamicgraph::Vector)
             ,CONSTRUCT_SIGNAL_IN(v,                           dynamicgraph::Vector)
 
-            ,CONSTRUCT_SIGNAL_IN(wrench_base,                 dynamicgraph::Vector)
-
             ,CONSTRUCT_SIGNAL_OUT(tau_des,                    dynamicgraph::Vector, INPUT_SIGNALS)
 
+            ,CONSTRUCT_SIGNAL_OUT(dv_des,                     dg::Vector, m_tau_desSOUT)
             ,CONSTRUCT_SIGNAL_OUT(M,                          dg::Matrix, m_tau_desSOUT)
             ,CONSTRUCT_SIGNAL_OUT(com,                        dg::Vector, m_tau_desSOUT)
             ,CONSTRUCT_SIGNAL_OUT(com_vel,                    dg::Vector, m_tau_desSOUT)
@@ -383,14 +423,14 @@ namespace dynamicgraph
 
         m_com_offset.setZero();
 
-        addCommand("laodURDF",
+        addCommand("loadURDF",
                    makeCommandVoid1(*this, &TsidController::loadURDF,
                                     docCommandVoid1("Loads the URDF model.",
                                                     "Filepath to the URDF file (string)")));
 
         addCommand("init",
-                   makeCommandVoid2(*this, &TsidController::init,
-                                    docCommandVoid2("Initialize the entity.",
+                   makeCommandVoid1(*this, &TsidController::init,
+                                    docCommandVoid1("Initialize the entity.",
                                                     "Time period in seconds (double)")));
 
         addCommand("updateComOffset",
@@ -416,7 +456,7 @@ namespace dynamicgraph
       {
         vector<string> package_dirs;
         m_robot = new robots::RobotWrapper(urdf_filepath, package_dirs,
-           se3::JointModelFreeFlyer());
+           pinocchio::JointModelFreeFlyer());
 
         m_invDyn = new InverseDynamicsFormulationAccForce("invdyn", *m_robot);
 
@@ -426,13 +466,15 @@ namespace dynamicgraph
 
       void TsidController::addContact(const std::string& frame_name)
       {
-        (!m_robot_loaded) {
+        if (!m_robot_loaded) {
           SEND_MSG("Need to load the URDF model first.", MSG_TYPE_ERROR);
         }
 
-        TsidContactHelper* ch = new TsidContactHelper(frame_name, this, m_robot, m_invDyn);
+        TsidContactHelper* ch = new TsidContactHelper(frame_name, *this, *m_robot, *m_invDyn);
         m_contacts.push_back(ch);
-        Entity::signalRegistration(ch.signlas());
+        Entity::signalRegistration(ch->signals());
+
+        SEND_MSG("Add contact frame: " + toString(frame_name), MSG_TYPE_INFO);
       }
 
       void TsidController::init(const double& dt)
@@ -444,29 +486,27 @@ namespace dynamicgraph
           return SEND_MSG("Init failed: Need to load robot URDF first.", MSG_TYPE_ERROR);
         }
 
-        const Eigen::Vector3d& contactNormal = m_contact_normalSIN(0);;
         const Eigen::Vector3d& kp_com = m_kp_comSIN(0);
         const Eigen::Vector3d& kd_com = m_kd_comSIN(0);
         const Eigen::Vector6d& kp_feet = m_kp_feetSIN(0);
         const Eigen::Vector6d& kd_feet = m_kd_feetSIN(0);
-        const VectorN& kp_posture = m_kp_postureSIN(0);
-        const VectorN& kd_posture = m_kd_postureSIN(0);
 
         const int nj = m_robot->nv() - 6;
 
-        assert(kp_posture.size()==nj);
-        assert(kd_posture.size()==nj);
-        assert(rotor_inertias.size()==nj);
-        assert(gear_ratios.size()==nj);
-
         m_w_com = m_w_comSIN(0);
-        const double & w_forces = m_w_forcesSIN(0);
 
         try
         {
           if (m_rotor_inertiasSIN.isPlugged() && m_gear_ratiosSIN.isPlugged()) {
-            m_robot->rotor_inertias(m_rotor_inertiasSIN(0));
-            m_robot->gear_ratios(m_gear_ratiosSIN(0));
+
+            const VectorN& rotor_inertias = m_rotor_inertiasSIN(0);
+            const VectorN& gear_ratios = m_gear_ratiosSIN(0);
+
+            assert(rotor_inertias.size()==nj);
+            assert(gear_ratios.size()==nj);
+
+            m_robot->rotor_inertias(rotor_inertias);
+            m_robot->gear_ratios(gear_ratios);
           }
 
           m_taskCom = new TaskComEquality("task-com", *m_robot);
@@ -477,6 +517,12 @@ namespace dynamicgraph
           m_sampleCom = TrajectorySample(3);
 
           if (m_w_postureSIN.isPlugged()) {
+            const VectorN& kp_posture = m_kp_postureSIN(0);
+            const VectorN& kd_posture = m_kd_postureSIN(0);
+
+            assert(kp_posture.size()==nj);
+            assert(kd_posture.size()==nj);
+
             m_w_posture = m_w_postureSIN(0);
             m_taskPosture = new TaskJointPosture("task-posture", *m_robot);
             m_taskPosture->Kp(kp_posture);
@@ -486,8 +532,20 @@ namespace dynamicgraph
             m_samplePosture = TrajectorySample(m_robot->nv()-6);
           }
 
-          for (auto &contact : m_contacts) {
-            contact.init();
+          // Update the robot's data such that the contact's can set the
+          // correct reference positions.
+          const VectorN m_q = m_qSIN(0);
+          const VectorN m_v = m_vSIN(0);
+
+          assert(m_q.size() == m_robot->nq());
+          assert(m_v.size() == m_robot->nv());
+
+          // Compute all terms, such that they are available when computing
+          // frame positions during the `contact.before_solving(iter)`.
+          m_robot->computeAllTerms((pinocchio::Data &)(m_invDyn->data()), m_q, m_v);
+
+          for (int i = 0; i < m_contacts.size(); i++) {
+            m_contacts[i]->init();
           }
 
           m_hqpSolver = SolverHQPFactory::createNewSolver(SOLVER_HQP_EIQUADPROG_FAST,
@@ -524,10 +582,12 @@ namespace dynamicgraph
         getProfiler().start(PROFILE_READ_INPUT_SIGNALS_AND_PREPARE_INVDYN);
 
         // COM
+        const Eigen::Vector3d& kp_com = m_kp_comSIN(iter);
+        const Eigen::Vector3d& kd_com = m_kd_comSIN(iter);
+        const double & w_com = m_w_comSIN(iter);
         const Vector3& x_com_ref =   m_com_ref_posSIN(iter);
         const Vector3& dx_com_ref =  m_com_ref_velSIN(iter);
         const Vector3& ddx_com_ref = m_com_ref_accSIN(iter);
-        const double & w_com = m_w_comSIN(iter);
 
         m_sampleCom.pos = x_com_ref - m_com_offset;
         m_sampleCom.vel = dx_com_ref;
@@ -538,24 +598,27 @@ namespace dynamicgraph
         if(m_w_com != w_com)
         {
           m_w_com = w_com;
-          m_invDyn->updateTaskWeight(m_taskCom->name(), w_com);
+          m_invDyn->updateTaskWeight(m_taskCom->name(), w_cog
+        }
+
+        if (m_posture_ref_posSIN.isPlugged()) {
+          m_samplePosture.pos = m_posture_ref_posSIN(iter);
+          m_samplePosture.vel = m_posture_ref_velSIN(iter);
+          m_samplePosture.acc = m_posture_ref_accSIN(iter);
+
+          assert(m_samplePosture.pos.size() == nj);
+          assert(m_samplePosture.vel.size() == nj);
+          assert(m_samplePosture.acc.size() == nj);
         }
 
         // Posture
         if (m_w_postureSIN.isPlugged()) {
           const double & w_posture = m_w_postureSIN(iter);
-          const VectorN& kp_posture = m_kp_postureSIN(iter);
-          const VectorN& kd_posture = m_kd_postureSIN(iter);
-
-          m_samplePosture.pos = m_posture_ref_posSIN(iter);
-          m_samplePosture.vel = m_posture_ref_velSIN(iter);
-          m_samplePosture.acc = m_posture_ref_accSIN(iter);
+          const VectorN& kp_posture = m_kp_postureSIN(iter);g
+          const VectorN& kd_posture = m_kd_postureSIN(iter);g
 
           assert(kp_posture.size() == nj);
           assert(kd_posture.size() == nj);
-          assert(m_samplePosture.pos.size() == nj);
-          assert(m_samplePosture.vel.size() == nj);
-          assert(m_samplePosture.acc.size() == nj);
 
           m_taskPosture->setReference(m_samplePosture);
           m_taskPosture->Kp(kp_posture);
@@ -567,21 +630,20 @@ namespace dynamicgraph
           }
         }
 
-        m_q = m_qSIN(iter);
-        m_v = m_vSIN(iter);
+        const VectorN m_q = m_qSIN(iter);
+        const VectorN m_v = m_vSIN(iter);
 
         assert(m_q.size() == m_robot->nq());
         assert(m_v.size() == m_robot->nv());
 
         // Compute all terms, such that they are available when computing
         // frame positions during the `contact.before_solving(iter)`.
-        m_robot->computeAllTerms(m_invDyn->data(), m_q, n_v);
+        m_robot->computeAllTerms((pinocchio::Data &)(m_invDyn->data()), m_q, m_v);
 
         // Contacts
-        for (auto &contact : m_contacts) {
-          contact.before_solving(iter);
+        for (int i = 0; i < m_contacts.size(); i++) {
+          m_contacts[i]->before_solving(iter, m_t);
         }
-
         m_invDyn->computeProblemData(m_t, m_q, m_v);
 
         assert(m_q.size() == m_robot->nq());
@@ -592,13 +654,13 @@ namespace dynamicgraph
           SEND_MSG("Last time "+toString(m_timeLast)+" is not current time-1: "+toString(iter), MSG_TYPE_ERROR);
           if(m_timeLast == iter)
           {
-            s = m_tau_sot;
+            s = m_tau;
             return s;
           }
         }
         m_timeLast = iter;
 
-        const HQPData & hqpData = m_invDyn->computeProblemData(m_t, m_q_urdf, m_v_urdf);
+        const HQPData & hqpData = m_invDyn->computeProblemData(m_t, m_q, m_v);
         getProfiler().stop(PROFILE_READ_INPUT_SIGNALS_AND_PREPARE_INVDYN);
 
         getProfiler().start(PROFILE_HQP_SOLUTION);
@@ -613,8 +675,8 @@ namespace dynamicgraph
         {
           SEND_ERROR_STREAM_MSG("HQP solver failed to find a solution: "+toString(sol.status));
           SEND_DEBUG_STREAM_MSG(tsid::solvers::HQPDataToString(hqpData, false));
-          SEND_DEBUG_STREAM_MSG("q="+toString(q_sot.transpose(),1,5));
-          SEND_DEBUG_STREAM_MSG("v="+toString(v_sot.transpose(),1,5));
+          SEND_DEBUG_STREAM_MSG("q="+toString(m_q.transpose(),1,5));
+          SEND_DEBUG_STREAM_MSG("v="+toString(m_v.transpose(),1,5));
           s.setZero();
           return s;
         }
@@ -624,26 +686,30 @@ namespace dynamicgraph
         if(ddx_com_ref.norm()>1e-3)
           getStatistics().store("com ff ratio", ddx_com_ref.norm()/m_taskCom->getConstraint().vector().norm());
 
-        m_dv_urdf = m_invDyn->getAccelerations(sol);
-        m_robot_util->velocity_urdf_to_sot(m_q_urdf, m_dv_urdf, m_dv_sot);
+        // Contacts
+        for (int i = 0; i < m_contacts.size(); i++) {
+          m_contacts[i]->after_solving(iter, sol);
+        }
+
+        m_dv = m_invDyn->getAccelerations(sol);
         Eigen::Matrix<double,12,1> tmp;
 
+        m_tau = m_invDyn->getActuatorForces(sol);
 
+        if (m_w_postureSIN.isPlugged()) {
+          const VectorN& kp_pos = m_kp_posSIN(iter);
+          const VectorN& kd_pos = m_kd_posSIN(iter);
+          assert(kp_pos.size() == nj);
+          assert(kd_pos.size() == nj);
 
-        if(m_invDyn->getContactForces(m_contactRF->name(), sol, tmp))
-          m_f_RF = m_contactRF->getForceGeneratorMatrix() * tmp;
-        if(m_invDyn->getContactForces(m_contactLF->name(), sol, tmp))
-          m_f_LF = m_contactLF->getForceGeneratorMatrix() * tmp;
-        m_robot_util->joints_urdf_to_sot(m_invDyn->getActuatorForces(sol), m_tau_sot);
-
-        m_tau_sot += kp_pos.cwiseProduct(q_ref-q_sot.tail(m_robot_util->m_nbJoints)) +
-                     kd_pos.cwiseProduct(dq_ref-v_sot.tail(m_robot_util->m_nbJoints));
+          m_tau += kp_pos.cwiseProduct(m_samplePosture.pos - m_q.tail(nj)) +
+                   kd_pos.cwiseProduct(m_samplePosture.vel - m_v.tail(nj));
+        }
 
         getProfiler().stop(PROFILE_TAU_DES_COMPUTATION);
         m_t += m_dt;
 
-        s = m_tau_sot;
-
+        s = m_tau;
         return s;
       }
 
@@ -671,45 +737,7 @@ namespace dynamicgraph
         if(s.size()!=m_robot->nv())
           s.resize(m_robot->nv());
         m_tau_desSOUT(iter);
-        s = m_dv_sot;
-        return s;
-      }
-
-      DEFINE_SIGNAL_OUT_FUNCTION(f_des_right_foot,dynamicgraph::Vector)
-      {
-        if(!m_initSucceeded)
-        {
-          SEND_WARNING_STREAM_MSG("Cannot compute signal f_des_right_foot before initialization!");
-          return s;
-        }
-        if(s.size()!=6)
-          s.resize(6);
-        m_tau_desSOUT(iter);
-        if(m_contactState == LEFT_SUPPORT)
-        {
-          s.setZero();
-          return s;
-        }
-        s = m_f_RF;
-        return s;
-      }
-
-      DEFINE_SIGNAL_OUT_FUNCTION(f_des_left_foot,dynamicgraph::Vector)
-      {
-        if(!m_initSucceeded)
-        {
-          SEND_WARNING_STREAM_MSG("Cannot compute signal f_des_left_foot before initialization!");
-          return s;
-        }
-        if(s.size()!=6)
-          s.resize(6);
-        m_tau_desSOUT(iter);
-        if(m_contactState == RIGHT_SUPPORT)
-        {
-          s.setZero();
-          return s;
-        }
-        s = m_f_LF;
+        s = m_dv;
         return s;
       }
 
@@ -737,7 +765,7 @@ namespace dynamicgraph
         if(s.size()!=3)
           s.resize(3);
         m_tau_desSOUT(iter);
-        s = m_taskCom->getAcceleration(m_dv_urdf);
+        s = m_taskCom->getAcceleration(m_dv);
         return s;
       }
 
@@ -804,9 +832,3 @@ namespace dynamicgraph
     } // namespace torquecontrol
   } // namespace sot
 } // namespace dynamicgraph
-
-
-
-    }
-  }
-}

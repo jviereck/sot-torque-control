@@ -64,10 +64,10 @@ ENDIF(DDP_ACTUATOR_SOLVER_FOUND)
 #Compiles a plugin. The plugin library is ${LIBRARY_NAME}
 FOREACH(plugin ${plugins})
 
-  message( " Build plugin ${plugin}")
-
   #retrieve plugin name
   GET_FILENAME_COMPONENT(LIBRARY_NAME ${plugin} NAME)
+
+  message( " Build plugin ${plugin} -> ${LIBRARY_NAME}")
 
   # only one source file per plugin
   ADD_LIBRARY(${LIBRARY_NAME}

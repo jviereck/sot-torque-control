@@ -65,10 +65,19 @@ namespace dynamicgraph {
         class TsidContactHelper
         {
         public:
+          EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
           TsidContactHelper(const std::string& frame_name,
                           TsidController& controller,
                           tsid::robots::RobotWrapper& robot,
                           tsid::InverseDynamicsFormulationAccForce& invDyn);
+
+          const std::string m_frameName;
+          int m_frameId;
+
+          tsid::InverseDynamicsFormulationAccForce& m_invDyn;
+          tsid::robots::RobotWrapper& m_robot;
+          TsidController& m_controller;
 
           DECLARE_SIGNAL_IN(ref_pos,              dynamicgraph::Vector);
           DECLARE_SIGNAL_IN(ref_vel,              dynamicgraph::Vector);
@@ -77,24 +86,16 @@ namespace dynamicgraph {
           DECLARE_SIGNAL_IN(f_min,                double);
           DECLARE_SIGNAL_IN(f_max,                double);
 
+          DECLARE_SIGNAL_IN(mu,                   double);
+          DECLARE_SIGNAL_IN(contact_normal,       dynamicgraph::Vector);
+
           DECLARE_SIGNAL_OUT(des_f,               dynamicgraph::Vector);
           DECLARE_SIGNAL_OUT(pos,                 dynamicgraph::Vector);
           DECLARE_SIGNAL_OUT(vel,                 dynamicgraph::Vector);
           DECLARE_SIGNAL_OUT(acc,                 dynamicgraph::Vector);
           DECLARE_SIGNAL_OUT(des_acc,             dynamicgraph::Vector);
 
-          const std::string& getClassName() const;
-          // {
-          //   return m_controller.getClassName();
-          // }
-
-          const std::string& getName  () const;
-          // {
-          //   return m_controller.getName();
-          // }
-
-          const std::string& m_frameName;
-          int m_frameId;
+        public:
 
           void init();
           const SignalArray<int>& signals();
@@ -105,10 +106,6 @@ namespace dynamicgraph {
         protected:
           void addContact(const double& transitionTime);
           void removeContact(const double& time, const double& transitionTime);
-
-          tsid::InverseDynamicsFormulationAccForce& m_invDyn;
-          tsid::robots::RobotWrapper& m_robot;
-          TsidController& m_controller;
 
           tsid::contacts::ContactPoint* m_contact;
           tsid::tasks::TaskSE3Equality* m_taskMotion;
@@ -123,12 +120,16 @@ namespace dynamicgraph {
           {
             SUPPORT = 0,
             SUPPORT_TRANSITION = 1, // transition towards support
-            FLYING = 2, // transition towards support
+            FLYING = 2 // transition towards support
           };
 
           ContactState m_contactState;
 
           double            m_contactTransitionTime;  /// end time of the current contact transition (if any)
+
+          SignalArray<int> m_signals;
+
+          void sendMsg(const std::string& msg, MsgType t=MSG_TYPE_INFO, const char* file="", int line=0);
         };
 
       /* --------------------------------------------------------------------- */
@@ -146,9 +147,6 @@ namespace dynamicgraph {
 
         /* --- CONSTRUCTOR ---- */
         TsidController( const std::string & name );
-
-        void init(const double& dt,
-		  const std::string& robotRef);
 
         /* --- SIGNALS --- */
         DECLARE_SIGNAL_IN(com_ref_pos,                dynamicgraph::Vector);
@@ -180,13 +178,6 @@ namespace dynamicgraph {
         DECLARE_SIGNAL_IN(w_forces,                   double);
         DECLARE_SIGNAL_IN(weight_contact_forces,      dynamicgraph::Vector);
 
-        DECLARE_SIGNAL_IN(mu,                         double);
-        DECLARE_SIGNAL_IN(contact_points,             dynamicgraph::Matrix);
-        DECLARE_SIGNAL_IN(contact_normal,             dynamicgraph::Vector);
-        DECLARE_SIGNAL_IN(f_min,                      double);
-        DECLARE_SIGNAL_IN(f_max_right_foot,           double);
-        DECLARE_SIGNAL_IN(f_max_left_foot,            double);
-
         DECLARE_SIGNAL_IN(rotor_inertias,             dynamicgraph::Vector);
         DECLARE_SIGNAL_IN(gear_ratios,                dynamicgraph::Vector);
 
@@ -194,25 +185,30 @@ namespace dynamicgraph {
         DECLARE_SIGNAL_IN(v,                          dynamicgraph::Vector);
 
         DECLARE_SIGNAL_OUT(tau_des,                   dynamicgraph::Vector);
-        DECLARE_SIGNAL_OUT(M,                         dynamicgraph::Matrix);
+
         DECLARE_SIGNAL_OUT(dv_des,                    dynamicgraph::Vector);
+        DECLARE_SIGNAL_OUT(M,                         dynamicgraph::Matrix);
         DECLARE_SIGNAL_OUT(com,                       dynamicgraph::Vector);
         DECLARE_SIGNAL_OUT(com_vel,                   dynamicgraph::Vector);
         DECLARE_SIGNAL_OUT(com_acc,                   dynamicgraph::Vector);
         DECLARE_SIGNAL_OUT(com_acc_des,               dynamicgraph::Vector);
         DECLARE_SIGNAL_OUT(base_orientation,          dynamicgraph::Vector);
 
+      public:
 
         /* --- COMMANDS --- */
         /* --- ENTITY INHERITANCE --- */
         virtual void display( std::ostream& os ) const;
 
+        void init(const double& dt);
+        void updateComOffset();
+        void addContact(const std::string& frame_name);
+        void loadURDF(const std::string& urdf_filepath);
+
         void sendMsg(const std::string& msg, MsgType t=MSG_TYPE_INFO, const char* file="", int line=0)
         {
           getLogger().sendMsg("["+name+"] "+msg, t, file, line);
         }
-
-        void loadURDF(const std::string& urdf_filepath)
 
       protected:
 
@@ -227,8 +223,8 @@ namespace dynamicgraph {
         int m_frame_id_lf;  /// frame id of left foot
 
         /// tsid
-        tsid::robots::RobotWrapper *                       m_robot;
-        tsid::solvers::SolverHQPBase *           m_hqpSolver;
+        tsid::robots::RobotWrapper *               m_robot;
+        tsid::solvers::SolverHQPBase *             m_hqpSolver;
         tsid::InverseDynamicsFormulationAccForce * m_invDyn;
         tsid::tasks::TaskComEquality *             m_taskCom;
         tsid::tasks::TaskJointPosture *            m_taskPosture;
@@ -240,10 +236,10 @@ namespace dynamicgraph {
         double m_w_com;
         double m_w_posture;
 
-        tsid::math::Vector  m_dv_sot;              /// desired accelerations (sot order)
-        tsid::math::Vector  m_dv_urdf;             /// desired accelerations (urdf order)
+        tsid::math::Vector  m_dv;                  /// desired accelerations (urdf order)
         tsid::math::Vector  m_f;                   /// desired force coefficients (24d)
         tsid::math::Vector3 m_com_offset;          /// 3d CoM offset
+        tsid::math::Vector  m_tau;
         tsid::math::Vector  m_q_urdf;
         tsid::math::Vector  m_v_urdf;
 
